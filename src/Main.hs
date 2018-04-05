@@ -256,7 +256,10 @@ main = do
 
   cancel gcStatsThread
 
-  putStrLn "evaluating the nat one last time..."
+  putStrLn "to guarantee the GC knows the live data is live, we traverse all of it at the end of the program."
+  putStrLn "feel free to abort the traversal using <Ctrl+C>."
+  putStrLn ""
+  putStrLn "traversing live data..."
   nat <- readIORef refNat
   _ <- evaluate (fromNat nat)
   putStrLn "done."
