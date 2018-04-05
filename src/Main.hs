@@ -94,7 +94,7 @@ data FormState = FormState
 makeLenses ''FormState
 
 initialFormState :: FormState
-initialFormState = FormState 0 0 0 0 5
+initialFormState = FormState 0 0 0 0 1
 
 
 data AppEvent
