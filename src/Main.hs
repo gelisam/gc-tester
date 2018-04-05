@@ -197,7 +197,7 @@ main = do
   gcStatsThread <- async . measureGcStats $ rtsStats0
 
   let renderStats :: AppState -> (Widget AppField)
-      renderStats s | view appStateEvaluating s = str "evaluating..."
+      renderStats s | view appStateEvaluating s = str "producing data..."
                     | otherwise
                     = (str "  each thread takes ~" <+> (str . show . view (appStateStats . appStatsGarbageDuration) $ s) <+> str " to produce its garbage")
                   <=> (str "  so we produce ~" <+> (str . show $ garbagePerSecond) <+> str " garbage constructors per second")
