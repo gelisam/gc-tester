@@ -1,0 +1,27 @@
+name:                gc-tester
+version:             0.1.0.0
+synopsis:            Garbage collection tester
+description:         A console UI in which we can control the amount of garbage generated and observe the impact on
+                     garbage collection.
+homepage:            https://github.com/SimSpace/gc-tester
+author:              Samuel Gélineau
+maintainer:          gelisam@simspace.com
+
+executables:
+  gc-tester:
+    source-dirs:      src
+    main-is:          Main.hs
+    ghc-options:
+      - -Wall
+      - -threaded
+      - -fwarn-incomplete-uni-patterns
+      - -O0
+      - -rtsopts
+    dependencies:
+      - base
+      - async
+      - brick
+      - lens
+      - say
+      - time
+      - vty
