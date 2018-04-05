@@ -71,16 +71,18 @@ every rate body = every1 rate () $ \dt () -> body dt
 
 
 data AppStats = AppStats
-  { _appStatsGarbageDuration :: NominalDiffTime
-  , _appStatsGcRate          :: Maybe Seconds
-  , _appStatsGcDuration      :: Seconds
-  , _appStatsGcThreadCount   :: Word32
+  { _appStatsGarbageDuration             :: NominalDiffTime
+  , _appStatsGcRate                      :: Maybe Seconds
+  , _appStatsGcDuration                  :: Seconds
+  , _appStatsGcThreadCount               :: Word32
+  , _appStatsActualGarbageProductionRate :: Maybe NominalDiffTime
+  , _appStatsActualStatsRefreshRate      :: Maybe NominalDiffTime
   } deriving (Show)
 
 makeLenses ''AppStats
 
 initialAppStats :: AppStats
-initialAppStats = AppStats 0 Nothing 0 0
+initialAppStats = AppStats 0 Nothing 0 0 Nothing Nothing
 
 
 data FormState = FormState
@@ -145,6 +147,7 @@ main = do
   refLiveData <- newIORef (mkNat 0)
   refGarbageDuration <- newIORef 0
   eventChan <- newBChan 10
+  refActualGarbageProductionRate <- newIORef Nothing
 
   let allocateLiveData :: Integer -> IO ()
       allocateLiveData liveAmount = do
@@ -155,7 +158,9 @@ main = do
         writeIORef refLiveData liveData
 
       produceGarbage :: Integer -> Seconds -> IO ()
-      produceGarbage garbageAmount garbageProductionRate = every garbageProductionRate $ \_ -> do
+      produceGarbage garbageAmount garbageProductionRate = every garbageProductionRate $ \actualGarbageProductionRate -> do
+        writeIORef refActualGarbageProductionRate . Just $ actualGarbageProductionRate
+
         garbageDuration <- measure $ do
           _ <- evaluate (fromNat (mkNat garbageAmount))
           pure ()
@@ -165,17 +170,18 @@ main = do
       refreshStats statsRefreshRate = do
         rtsStats0 <- getRTSStats
         t0 <- getCurrentTime
-        every1 statsRefreshRate (rtsStats0, t0, Nothing) $ \_ (rtsStats, t, gcRateMay) -> do
+        every1 statsRefreshRate (rtsStats0, t0, Nothing) $ \actualStatsRefreshRate (rtsStats, t, gcRateMay) -> do
           rtsStats' <- getRTSStats
           t' <- getCurrentTime
           let dt = diffUTCTime t' t
               gcCount = major_gcs rtsStats' - major_gcs rtsStats
               gcRate' = realToFrac dt / fromIntegral gcCount
 
-          garbageDuration <- readIORef refGarbageDuration
+          garbageDuration             <- readIORef refGarbageDuration
+          actualGarbageProductionRate <- readIORef refActualGarbageProductionRate
           let gcDuration    = nanoToSeconds . gcdetails_elapsed_ns . gc $ rtsStats'
               gcThreadCount = gcdetails_threads . gc $ rtsStats'
-              appStats      = AppStats garbageDuration gcRateMay gcDuration gcThreadCount
+              appStats      = AppStats garbageDuration gcRateMay gcDuration gcThreadCount actualGarbageProductionRate (Just actualStatsRefreshRate)
           writeBChan eventChan . AppEventUpdateStats $ appStats
 
           if dt > 1 && gcCount > 5
@@ -185,12 +191,15 @@ main = do
       renderStats :: AppState -> (Widget AppField)
       renderStats s | view appStateEvaluating s = str "producing data..."
                     | otherwise
-                    = (str "  each thread takes ~" <+> (str . show . view (appStateStats . appStatsGarbageDuration) $ s) <+> str " to produce its garbage")
+                    = (str "  each thread produces garbage every ~" <+> (str . maybe "?" show . view (appStateStats . appStatsActualGarbageProductionRate) $ s))
+                  <=> (str "  and it takes ~" <+> (str . show . view (appStateStats . appStatsGarbageDuration) $ s) <+> str " to produce that garbage")
                   <=> (str "  so we produce ~" <+> (str . show $ garbagePerSecond) <+> str " garbage constructors per second")
                   <=> str " "
                   <=> (str "  we run one GC every ~" <+> (str . maybe "?" show . view (appStateStats . appStatsGcRate) $ s) <+> str " seconds")
                   <=> (str "  the last one took " <+> (str . show . view (appStateStats . appStatsGcDuration) $ s) <+> str " seconds")
                   <=> (str "  and used " <+> (str . show . view (appStateStats . appStatsGcThreadCount) $ s) <+> str " threads")
+                  <=> str " "
+                  <=> (str "  we update the GC stats above every ~" <+> (str . maybe "?" show . view (appStateStats . appStatsActualStatsRefreshRate) $ s))
         where
           garbagePerIteration :: Double
           garbagePerIteration = fromIntegral (view (appStateForm . to formState . formStateGarbageProducerCount) s)
