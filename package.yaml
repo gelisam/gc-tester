@@ -10,7 +10,7 @@ maintainer:          gelisam@simspace.com
 executables:
   gc-tester:
     source-dirs:      src
-    main-is:          Main.hs
+    main:             Main.hs
     ghc-options:
       - -Wall
       - -threaded
