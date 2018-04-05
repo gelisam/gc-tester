@@ -72,7 +72,7 @@ every rate body = every1 rate () $ \dt () -> body dt
 
 data AppStats = AppStats
   { _appStatsGarbageDuration :: NominalDiffTime
-  , _appStatsGcRate          :: Seconds
+  , _appStatsGcRate          :: Maybe Seconds
   , _appStatsGcDuration      :: Seconds
   , _appStatsGcThreadCount   :: Word32
   } deriving (Show)
@@ -80,7 +80,7 @@ data AppStats = AppStats
 makeLenses ''AppStats
 
 initialAppStats :: AppStats
-initialAppStats = AppStats 0 0 0 0
+initialAppStats = AppStats 0 Nothing 0 0
 
 
 data FormState = FormState
@@ -164,18 +164,23 @@ main = do
       refreshStats :: Seconds -> IO ()
       refreshStats statsRefreshRate = do
         rtsStats0 <- getRTSStats
-        every1 statsRefreshRate rtsStats0 $ \dt rtsStats -> do
+        t0 <- getCurrentTime
+        every1 statsRefreshRate (rtsStats0, t0, Nothing) $ \_ (rtsStats, t, gcRateMay) -> do
           rtsStats' <- getRTSStats
+          t' <- getCurrentTime
+          let dt = diffUTCTime t' t
+              gcCount = major_gcs rtsStats' - major_gcs rtsStats
+              gcRate' = realToFrac dt / fromIntegral gcCount
 
           garbageDuration <- readIORef refGarbageDuration
-          let gcCount       = major_gcs rtsStats' - major_gcs rtsStats
-              gcRate        = realToFrac dt / fromIntegral gcCount
-              gcDuration    = nanoToSeconds . gcdetails_elapsed_ns . gc $ rtsStats'
+          let gcDuration    = nanoToSeconds . gcdetails_elapsed_ns . gc $ rtsStats'
               gcThreadCount = gcdetails_threads . gc $ rtsStats'
-              appStats      = AppStats garbageDuration gcRate gcDuration gcThreadCount
+              appStats      = AppStats garbageDuration gcRateMay gcDuration gcThreadCount
           writeBChan eventChan . AppEventUpdateStats $ appStats
 
-          pure rtsStats'
+          if dt > 1 && gcCount > 5
+          then pure (rtsStats', t', Just gcRate')
+          else pure (rtsStats, t, gcRateMay)
 
       renderStats :: AppState -> (Widget AppField)
       renderStats s | view appStateEvaluating s = str "producing data..."
@@ -183,7 +188,7 @@ main = do
                     = (str "  each thread takes ~" <+> (str . show . view (appStateStats . appStatsGarbageDuration) $ s) <+> str " to produce its garbage")
                   <=> (str "  so we produce ~" <+> (str . show $ garbagePerSecond) <+> str " garbage constructors per second")
                   <=> str " "
-                  <=> (str "  we run one GC every ~" <+> (str . show . view (appStateStats . appStatsGcRate) $ s) <+> str " seconds")
+                  <=> (str "  we run one GC every ~" <+> (str . maybe "?" show . view (appStateStats . appStatsGcRate) $ s) <+> str " seconds")
                   <=> (str "  the last one took " <+> (str . show . view (appStateStats . appStatsGcDuration) $ s) <+> str " seconds")
                   <=> (str "  and used " <+> (str . show . view (appStateStats . appStatsGcThreadCount) $ s) <+> str " threads")
         where
