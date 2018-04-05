@@ -72,10 +72,10 @@ initialAppStats = AppStats 0 0 0 0
 
 
 data FormState = FormState
-  { _formStateN  :: Double
-  , _formStateK  :: Double
-  , _formStateT  :: Int
-  , _formStateDT :: Seconds
+  { _formStateLiveAmount            :: Double
+  , _formStateGarbageAmount         :: Double
+  , _formStateGarbageProducerCount  :: Int
+  , _formStateGarbageProductionRate :: Seconds
   } deriving (Show)
 
 makeLenses ''FormState
@@ -90,18 +90,18 @@ data AppEvent
 
 
 data AppField
-  = AppFieldN
-  | AppFieldK
-  | AppFieldT
-  | AppFieldDT
+  = AppFieldLiveAmount
+  | AppFieldGarbageAmount
+  | AppFieldGarbageProducerCount
+  | AppFieldGarbageProductionRate
   deriving (Show, Eq, Ord)
 
 mkForm :: FormState -> Form FormState AppEvent AppField
 mkForm = newForm
-  [ (\field -> str "  amount of live data   " <+> field <+> str " constructors  ") @@= editShowableField formStateN  AppFieldN
-  , (\field -> str "  amount of garbage     " <+> field <+> str " constructors  ") @@= editShowableField formStateK  AppFieldK
-  , (\field -> str "  garbage producers     " <+> field <+> str      " threads  ") @@= editShowableField formStateT  AppFieldT
-  , (\field -> str "  time between wakeups  " <+> field <+> str      " seconds  ") @@= editShowableField formStateDT AppFieldDT
+  [ (\field -> str "  amount of live data   " <+> field <+> str " constructors  ") @@= editShowableField formStateLiveAmount            AppFieldLiveAmount
+  , (\field -> str "  amount of garbage     " <+> field <+> str " constructors  ") @@= editShowableField formStateGarbageAmount         AppFieldGarbageAmount
+  , (\field -> str "  garbage producers     " <+> field <+> str      " threads  ") @@= editShowableField formStateGarbageProducerCount  AppFieldGarbageProducerCount
+  , (\field -> str "  time between wakeups  " <+> field <+> str      " seconds  ") @@= editShowableField formStateGarbageProductionRate AppFieldGarbageProductionRate
   ]
 
 initialForm :: Form FormState AppEvent AppField
@@ -122,12 +122,12 @@ initialAppState = AppState initialForm initialAppStats False
 
 main :: IO ()
 main = do
-  refN  <- newIORef 0  -- amount of live data
-  refK  <- newIORef 0  -- amount of garbage per thread per wakeup
-  refT  <- newIORef 0  -- number of threads
-  refDT <- newIORef 0  -- number of seconds betweek wakeups
+  refLiveAmount            <- newIORef 0
+  refGarbageAmount         <- newIORef 0
+  refGarbageProducerCount  <- newIORef 0
+  refGarbageProductionRate <- newIORef 0
 
-  refNat <- newIORef (mkNat 0)
+  refLiveData <- newIORef (mkNat 0)
   refGarbageThreads <- newIORef []
 
   refGarbageDuration <- newIORef 0
@@ -137,14 +137,14 @@ main = do
   let produceGarbage :: IO ()
       produceGarbage = do
         garbageDuration <- measure $ do
-          k <- round <$> readIORef refK
-          _ <- evaluate (fromNat (mkNat k))
+          garbageAmount <- round <$> readIORef refGarbageAmount
+          _ <- evaluate (fromNat (mkNat garbageAmount))
           pure ()
 
         writeIORef refGarbageDuration garbageDuration
 
-        dt <- readIORef refDT
-        sleep (dt - realToFrac garbageDuration)
+        garbageProductionRate <- readIORef refGarbageProductionRate
+        sleep (garbageProductionRate - realToFrac garbageDuration)
         produceGarbage
 
       measureGcStats :: RTSStats -> IO ()
@@ -162,36 +162,36 @@ main = do
         sleep gcStatsUpdateRate
         measureGcStats rtsStats'
 
-      updateN :: Double -> IO ()
-      updateN doubleN = do
-        let n = round doubleN
-        writeIORef refN doubleN
+      updateLiveAmount :: Double -> IO ()
+      updateLiveAmount doubleLiveAmount = do
+        let liveAmount = round doubleLiveAmount
+        writeIORef refLiveAmount doubleLiveAmount
         _ <- async $ do
-          let nat = mkNat n
+          let liveData = mkNat liveAmount
           writeBChan eventChan . AppEventSetEvaluating $ True
-          _ <- evaluate (fromNat nat)
+          _ <- evaluate (fromNat liveData)
           writeBChan eventChan . AppEventSetEvaluating $ False
-          writeIORef refNat nat
+          writeIORef refLiveData liveData
         pure ()
 
-      updateK :: Double -> IO ()
-      updateK = writeIORef refK
+      updateGarbageAmount :: Double -> IO ()
+      updateGarbageAmount = writeIORef refGarbageAmount
 
-      updateT :: Int -> IO ()
-      updateT t = do
-        oldT <- readIORef refT
+      updateGarbageProducerCount :: Int -> IO ()
+      updateGarbageProducerCount garbageProducerCount = do
+        oldGarbageProducerCount <- readIORef refGarbageProducerCount
         oldGarbageThreads <- readIORef refGarbageThreads
-        if t < oldT
+        if garbageProducerCount < oldGarbageProducerCount
         then do
-          mapM_ cancel (drop t oldGarbageThreads)
-          modifyIORef refGarbageThreads (take t)
+          mapM_ cancel (drop garbageProducerCount oldGarbageThreads)
+          modifyIORef refGarbageThreads (take garbageProducerCount)
         else do
-          newGarbageThreads <- replicateM (t-oldT) (async produceGarbage)
+          newGarbageThreads <- replicateM (garbageProducerCount - oldGarbageProducerCount) (async produceGarbage)
           modifyIORef refGarbageThreads (++ newGarbageThreads)
-        writeIORef refT t
+        writeIORef refGarbageProducerCount garbageProducerCount
 
-      updateDT :: Seconds -> IO ()
-      updateDT = writeIORef refDT
+      updateGarbageProductionRate :: Seconds -> IO ()
+      updateGarbageProductionRate = writeIORef refGarbageProductionRate
 
   rtsStats0 <- getRTSStats
   gcStatsThread <- async . measureGcStats $ rtsStats0
@@ -207,11 +207,11 @@ main = do
                   <=> (str "  and used " <+> (str . show . view (appStateStats . appStatsGcThreadCount) $ s) <+> str " threads")
         where
           garbagePerIteration :: Double
-          garbagePerIteration = fromIntegral (view (appStateForm . to formState . formStateT) s)
-                              * view (appStateForm . to formState . formStateK) s
+          garbagePerIteration = fromIntegral (view (appStateForm . to formState . formStateGarbageProducerCount) s)
+                              * view (appStateForm . to formState . formStateGarbageAmount) s
 
           iterationDuration :: Seconds
-          iterationDuration = view (appStateForm . to formState . formStateDT) s
+          iterationDuration = view (appStateForm . to formState . formStateGarbageProductionRate) s
                         `max` realToFrac (view (appStateStats . appStatsGarbageDuration) s)
 
           garbagePerSecond :: Double
@@ -227,14 +227,14 @@ main = do
       updateAppState :: AppState -> BrickEvent AppField AppEvent -> EventM AppField (Next AppState)
       updateAppState s (VtyEvent (EvKey KEsc _)) = halt s
       updateAppState s (VtyEvent (EvKey KEnter _)) = do
-        n  <- liftIO . readIORef $ refN
-        k  <- liftIO . readIORef $ refK
-        t  <- liftIO . readIORef $ refT
-        dt <- liftIO . readIORef $ refDT
-        liftIO . updateIfChanged updateN  n  . view (appStateForm . to formState . formStateN)  $ s
-        liftIO . updateIfChanged updateK  k  . view (appStateForm . to formState . formStateK)  $ s
-        liftIO . updateIfChanged updateT  t  . view (appStateForm . to formState . formStateT)  $ s
-        liftIO . updateIfChanged updateDT dt . view (appStateForm . to formState . formStateDT) $ s
+        liveAmount  <- liftIO . readIORef $ refLiveAmount
+        garbageAmount  <- liftIO . readIORef $ refGarbageAmount
+        garbageProducerCount  <- liftIO . readIORef $ refGarbageProducerCount
+        garbageProductionRate <- liftIO . readIORef $ refGarbageProductionRate
+        liftIO . updateIfChanged updateLiveAmount            liveAmount            . view (appStateForm . to formState . formStateLiveAmount)            $ s
+        liftIO . updateIfChanged updateGarbageAmount         garbageAmount         . view (appStateForm . to formState . formStateGarbageAmount)         $ s
+        liftIO . updateIfChanged updateGarbageProducerCount  garbageProducerCount  . view (appStateForm . to formState . formStateGarbageProducerCount)  $ s
+        liftIO . updateIfChanged updateGarbageProductionRate garbageProductionRate . view (appStateForm . to formState . formStateGarbageProductionRate) $ s
         continue s
       updateAppState s (Brick.AppEvent (AppEventSetEvaluating evaluating)) = do
         let s' = set appStateEvaluating evaluating s
@@ -260,6 +260,6 @@ main = do
   putStrLn "feel free to abort the traversal using <Ctrl+C>."
   putStrLn ""
   putStrLn "traversing live data..."
-  nat <- readIORef refNat
-  _ <- evaluate (fromNat nat)
+  liveData <- readIORef refLiveData
+  _ <- evaluate (fromNat liveData)
   putStrLn "done."
