@@ -9,7 +9,7 @@ import Brick.Widgets.Center
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Exception
-import Control.Lens
+import Control.Lens hiding (zoom)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Function
@@ -18,7 +18,9 @@ import Data.IORef
 import Data.Time
 import GHC.Stats
 import GHC.Word
-import Graphics.Vty (mkVty, defaultConfig)
+import Graphics.Vty (defaultConfig)
+import Graphics.Vty.Attributes (defAttr)
+import Graphics.Vty.Platform.Unix (mkVty)
 import Graphics.Vty.Input.Events
 
 
@@ -85,18 +87,18 @@ initialAppStats :: AppStats
 initialAppStats = AppStats 0 Nothing 0 0 Nothing Nothing
 
 
-data FormState = FormState
-  { _formStateLiveAmount            :: Double
-  , _formStateGarbageAmount         :: Double
-  , _formStateGarbageProducerCount  :: Int
-  , _formStateGarbageProductionRate :: Seconds
-  , _formStateStatsRefreshRate      :: Seconds
+data FormFields = FormFields
+  { _formFieldsLiveAmount            :: Double
+  , _formFieldsGarbageAmount         :: Double
+  , _formFieldsGarbageProducerCount  :: Int
+  , _formFieldsGarbageProductionRate :: Seconds
+  , _formFieldsStatsRefreshRate      :: Seconds
   } deriving (Show)
 
-makeLenses ''FormState
+makeLenses ''FormFields
 
-initialFormState :: FormState
-initialFormState = FormState 0 0 0 0 1
+initialFormFields :: FormFields
+initialFormFields = FormFields 0 0 0 0 1
 
 
 data AppEvent
@@ -112,23 +114,23 @@ data AppField
   | AppFieldStatsRefreshRate
   deriving (Show, Eq, Ord)
 
-mkForm :: FormState -> Form FormState AppEvent AppField
+mkForm :: FormFields -> Form FormFields AppEvent AppField
 mkForm = newForm
-  [ (\field -> str "  amount of live data    " <+> field <+> str " constructors  ") @@= editShowableField formStateLiveAmount            AppFieldLiveAmount
-  , (\field -> str "  amount of garbage      " <+> field <+> str " constructors  ") @@= editShowableField formStateGarbageAmount         AppFieldGarbageAmount
-  , (\field -> str "  garbage producers      " <+> field <+> str      " threads  ") @@= editShowableField formStateGarbageProducerCount  AppFieldGarbageProducerCount
+  [ (\field -> str "  amount of live data    " <+> field <+> str " constructors  ") @@= editShowableField formFieldsLiveAmount            AppFieldLiveAmount
+  , (\field -> str "  amount of garbage      " <+> field <+> str " constructors  ") @@= editShowableField formFieldsGarbageAmount         AppFieldGarbageAmount
+  , (\field -> str "  garbage producers      " <+> field <+> str      " threads  ") @@= editShowableField formFieldsGarbageProducerCount  AppFieldGarbageProducerCount
   , (\field -> str "  time between wakeups   " <+> field <+> str      " seconds  "
-           <=> str " "                                                            ) @@= editShowableField formStateGarbageProductionRate AppFieldGarbageProductionRate
-  , (\field -> str "  time between GC stats  " <+> field <+> str      " seconds  ") @@= editShowableField formStateStatsRefreshRate      AppFieldStatsRefreshRate
+           <=> str " "                                                            ) @@= editShowableField formFieldsGarbageProductionRate AppFieldGarbageProductionRate
+  , (\field -> str "  time between GC stats  " <+> field <+> str      " seconds  ") @@= editShowableField formFieldsStatsRefreshRate      AppFieldStatsRefreshRate
   ]
 
-initialForm :: Form FormState AppEvent AppField
-initialForm = mkForm initialFormState
+initialForm :: Form FormFields AppEvent AppField
+initialForm = mkForm initialFormFields
 
 
 data AppState = AppState
-  { _appStateForm           :: Form FormState AppEvent AppField
-  , _appStateFormState      :: FormState
+  { _appStateForm           :: Form FormFields AppEvent AppField
+  , _appStateFormFields     :: FormFields
   , _appStateStats          :: AppStats
   , _appStateEvaluating     :: Bool
   , _appStateLiveDataThread :: Async ()
@@ -139,7 +141,7 @@ data AppState = AppState
 makeLenses ''AppState
 
 mkAppState :: Async () -> [Async ()] -> Async () -> AppState
-mkAppState = AppState initialForm initialFormState initialAppStats False
+mkAppState = AppState initialForm initialFormFields initialAppStats False
 
 
 main :: IO ()
@@ -202,11 +204,11 @@ main = do
                   <=> (str "  we update the GC stats above every ~" <+> (str . maybe "?" show . view (appStateStats . appStatsActualStatsRefreshRate) $ s))
         where
           garbagePerIteration :: Double
-          garbagePerIteration = fromIntegral (view (appStateForm . to formState . formStateGarbageProducerCount) s)
-                              * view (appStateForm . to formState . formStateGarbageAmount) s
+          garbagePerIteration = fromIntegral (view (appStateForm . to formState . formFieldsGarbageProducerCount) s)
+                              * view (appStateForm . to formState . formFieldsGarbageAmount) s
 
           iterationDuration :: Seconds
-          iterationDuration = view (appStateForm . to formState . formStateGarbageProductionRate) s
+          iterationDuration = view (appStateForm . to formState . formFieldsGarbageProductionRate) s
                         `max` realToFrac (view (appStateStats . appStatsGarbageDuration) s)
 
           garbagePerSecond :: Double
@@ -219,79 +221,82 @@ main = do
                      <+> vBorder
                      <+> center (renderStats s)
 
-      updateLiveAmount :: AppState -> EventM AppField AppState
-      updateLiveAmount s = liftIO $ do
-        let oldLiveAmount = view (appStateFormState . formStateLiveAmount) s
-            newLiveAmount = view (appStateForm . to formState . formStateLiveAmount)  s
-        if newLiveAmount /= oldLiveAmount
-        then flip (traverseOf appStateLiveDataThread) s $ \oldLiveDataThread -> do
-          cancel oldLiveDataThread
-          async $ do
-            allocateLiveData (round newLiveAmount)
-        else pure s
+      updateLiveAmount :: EventM AppField AppState ()
+      updateLiveAmount = do
+        oldLiveAmount <- use (appStateFormFields . formFieldsLiveAmount)
+        newLiveAmount <- use (appStateForm . to formState . formFieldsLiveAmount)
+        when (newLiveAmount /= oldLiveAmount) $ do
+          oldLiveDataThread <- use appStateLiveDataThread
+          newLiveDataThread <- liftIO $ do
+            cancel oldLiveDataThread
+            async $ do
+              allocateLiveData (round newLiveAmount)
+          appStateLiveDataThread .= newLiveDataThread
 
-      updateGarbageProducers :: AppState -> EventM AppField AppState
-      updateGarbageProducers s = liftIO $ do
-        let oldGarbageAmount         = view (appStateFormState . formStateGarbageAmount)         s
-            oldGarbageProducerCount  = view (appStateFormState . formStateGarbageProducerCount)  s
-            oldGarbageProductionRate = view (appStateFormState . formStateGarbageProductionRate) s
-            newGarbageAmount         = view (appStateForm . to formState . formStateGarbageAmount)         s
-            newGarbageProducerCount  = view (appStateForm . to formState . formStateGarbageProducerCount)  s
-            newGarbageProductionRate = view (appStateForm . to formState . formStateGarbageProductionRate) s
-        if   newGarbageAmount         /= oldGarbageAmount
-          || newGarbageProducerCount  /= oldGarbageProducerCount
-          || newGarbageProductionRate /= oldGarbageProductionRate
-        then flip (traverseOf appStateGarbageThreads) s $ \oldGarbageThreads -> do
-          mapM_ cancel oldGarbageThreads
-          replicateM newGarbageProducerCount . async $ do
+      updateGarbageProducers :: EventM AppField AppState ()
+      updateGarbageProducers = do
+        oldGarbageAmount         <- use (appStateFormFields . formFieldsGarbageAmount)
+        oldGarbageProducerCount  <- use (appStateFormFields . formFieldsGarbageProducerCount)
+        oldGarbageProductionRate <- use (appStateFormFields . formFieldsGarbageProductionRate)
+        newGarbageAmount         <- use (appStateForm . to formState . formFieldsGarbageAmount)
+        newGarbageProducerCount  <- use (appStateForm . to formState . formFieldsGarbageProducerCount)
+        newGarbageProductionRate <- use (appStateForm . to formState . formFieldsGarbageProductionRate)
+        when ( newGarbageAmount         /= oldGarbageAmount
+            || newGarbageProducerCount  /= oldGarbageProducerCount
+            || newGarbageProductionRate /= oldGarbageProductionRate
+             ) $ do
+          oldGarbageThreads <- use appStateGarbageThreads
+          liftIO $ mapM_ cancel oldGarbageThreads
+          newGarbageThreads <- liftIO $ replicateM newGarbageProducerCount . async $ do
             produceGarbage (round newGarbageAmount) newGarbageProductionRate
-        else pure s
+          appStateGarbageThreads .= newGarbageThreads
 
-      updateStatsRefreshers :: AppState -> EventM AppField AppState
-      updateStatsRefreshers s = liftIO $ do
-        let oldStatsRefreshRate = view (appStateFormState . formStateStatsRefreshRate) s
-            newStatsRefreshRate = view (appStateForm . to formState . formStateStatsRefreshRate)  s
-        if newStatsRefreshRate /= oldStatsRefreshRate
-        then flip (traverseOf appStateStatsThread) s $ \oldStatsThread -> do
-          cancel oldStatsThread
-          async $ do
-            refreshStats newStatsRefreshRate
-        else pure s
+      updateStatsRefreshers :: EventM AppField AppState ()
+      updateStatsRefreshers = do
+        oldStatsRefreshRate <- use (appStateFormFields . formFieldsStatsRefreshRate)
+        newStatsRefreshRate <- use (appStateForm . to formState . formFieldsStatsRefreshRate)
+        when (newStatsRefreshRate /= oldStatsRefreshRate) $ do
+          oldStatsThread <- use appStateStatsThread
+          newStatsThread <- liftIO $ do
+            cancel oldStatsThread
+            async $ refreshStats newStatsRefreshRate
+          appStateStatsThread .= newStatsThread
 
-      updateFormState :: AppState -> EventM AppField AppState
-      updateFormState s = do
-        let newFormState = view (appStateForm . to formState) s
-        pure . set (appStateFormState) newFormState $ s
+      updateFormFields :: EventM AppField AppState ()
+      updateFormFields = do
+        newFormFields <- use (appStateForm . to formState)
+        appStateFormFields .= newFormFields
 
-      updateAppState :: AppState -> BrickEvent AppField AppEvent -> EventM AppField (Next AppState)
-      updateAppState s (VtyEvent (EvKey KEsc _)) = halt s
-      updateAppState s (VtyEvent (EvKey KEnter _)) = pure s
-                                                 >>= updateLiveAmount
-                                                 >>= updateGarbageProducers
-                                                 >>= updateStatsRefreshers
-                                                 >>= updateFormState
-                                                 >>= continue
-      updateAppState s (Brick.AppEvent (AppEventSetEvaluating evaluating)) = do
-        let s' = set appStateEvaluating evaluating s
-        continue s'
-      updateAppState s (Brick.AppEvent (AppEventUpdateStats appStats)) = do
-        let s' = set appStateStats appStats s
-        continue s'
-      updateAppState s e = do
-        s' <- traverseOf appStateForm (handleFormEvent e) s
-        continue s'
+      updateAppState :: BrickEvent AppField AppEvent -> EventM AppField AppState ()
+      updateAppState (VtyEvent (EvKey KEsc _)) = do
+        halt
+      updateAppState (VtyEvent (EvKey KEnter _)) = do
+        updateLiveAmount
+        updateGarbageProducers
+        updateStatsRefreshers
+        updateFormFields
+      updateAppState (Brick.AppEvent (AppEventSetEvaluating evaluating)) = do
+        appStateEvaluating .= evaluating
+      updateAppState (Brick.AppEvent (AppEventUpdateStats appStats)) = do
+        appStateStats .= appStats
+      updateAppState e = do
+        zoom appStateForm $ handleFormEvent e
+
+      noStartEvent :: EventM AppField AppState ()
+      noStartEvent = do
+        pure ()
 
       noAttrMap :: AppState -> AttrMap
-      noAttrMap _ = forceAttrMap mempty
+      noAttrMap _ = attrMap defAttr []
 
       app :: App AppState AppEvent AppField
-      app = App renderAppState showFirstCursor updateAppState pure noAttrMap
+      app = App renderAppState showFirstCursor updateAppState noStartEvent noAttrMap
 
-  let initialLiveAmount            = view formStateLiveAmount            initialFormState
-      initialGarbageAmount         = view formStateGarbageAmount         initialFormState
-      initialGarbageProducerCount  = view formStateGarbageProducerCount  initialFormState
-      initialGarbageProductionRate = view formStateGarbageProductionRate initialFormState
-      initialStatsRefreshRate      = view formStateStatsRefreshRate      initialFormState
+  let initialLiveAmount            = view formFieldsLiveAmount            initialFormFields
+      initialGarbageAmount         = view formFieldsGarbageAmount         initialFormFields
+      initialGarbageProducerCount  = view formFieldsGarbageProducerCount  initialFormFields
+      initialGarbageProductionRate = view formFieldsGarbageProductionRate initialFormFields
+      initialStatsRefreshRate      = view formFieldsStatsRefreshRate      initialFormFields
   initialLiveDataThread <- async $ do
     allocateLiveData (round initialLiveAmount)
   initialGarbageThreads <- replicateM initialGarbageProducerCount . async $ do
@@ -299,7 +304,8 @@ main = do
   initialStatsThread <- async $ do
     refreshStats initialStatsRefreshRate
   let initialAppState = mkAppState initialLiveDataThread initialGarbageThreads initialStatsThread
-  appState <- customMain (mkVty defaultConfig) (Just eventChan) app initialAppState
+  vty <- mkVty defaultConfig
+  appState <- customMain vty (mkVty defaultConfig) (Just eventChan) app initialAppState
 
   mapM_ cancel . view appStateGarbageThreads $ appState
   cancel . view appStateStatsThread $ appState
