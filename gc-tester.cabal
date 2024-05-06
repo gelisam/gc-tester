@@ -1,0 +1,31 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.36.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           gc-tester
+version:        0.1.0.0
+synopsis:       Garbage collection tester
+description:    A console UI in which we can control the amount of garbage generated and observe the impact on garbage collection.
+homepage:       https://github.com/SimSpace/gc-tester
+author:         Samuel Gélineau
+maintainer:     gelisam@simspace.com
+build-type:     Simple
+
+executable gc-tester
+  main-is: Main.hs
+  other-modules:
+      Paths_gc_tester
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -threaded -fwarn-incomplete-uni-patterns -O0 -rtsopts
+  build-depends:
+      async
+    , base
+    , brick
+    , lens
+    , say
+    , time
+    , vty
+  default-language: Haskell2010

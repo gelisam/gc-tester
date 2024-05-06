@@ -2,7 +2,7 @@
 
 ![screenshot](screenshot.png)
 
-Run using `stack build && stack exec -- gc-tester +RTS -T`.
+Run using `cabal run gc-tester -- +RTS -T`.
 
 Move between fields using `<TAB>` and `<Shift+TAB>`.
 
